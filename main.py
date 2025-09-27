@@ -5,6 +5,8 @@ from typing import Tuple
 import os
 import shutil
 import platform
+from concurrent.futures import ThreadPoolExecutor
+from PyPDF2 import PdfReader, PdfWriter
 
 
 def _which_any(names):
@@ -155,6 +157,12 @@ def ocr_pdf(
     if tesseract_config:
         kwargs["tesseract_config"] = tesseract_config
 
+    # Установка параметров Tesseract по умолчанию
+    if tesseract_pagesegmode is None:
+        kwargs["tesseract_pagesegmode"] = 6  # Assume a single uniform block of text
+    if tesseract_oem is None:
+        kwargs["tesseract_oem"] = 1  # Use LSTM OCR engine
+
     try:
         ocrmypdf.ocr(**kwargs)
     except TypeError as te:
@@ -196,6 +204,76 @@ def _pick_gs_from_dir(dir_path: Path) -> str | None:
         if p.exists():
             return str(p)
     return None
+
+
+def split_pdf(input_path):
+    """Разделяет PDF на отдельные страницы."""
+    reader = PdfReader(input_path)
+    pages = []
+    for i, page in enumerate(reader.pages):
+        writer = PdfWriter()
+        writer.add_page(page)
+        temp_path = Path(input_path).with_name(f"temp_page_{i + 1}.pdf")
+        with open(temp_path, "wb") as temp_file:
+            writer.write(temp_file)
+        pages.append(temp_path)
+    return pages
+
+
+def merge_pdfs(page_paths, output_path):
+    """Объединяет страницы PDF в один файл."""
+    writer = PdfWriter()
+    for page_path in page_paths:
+        reader = PdfReader(page_path)
+        writer.add_page(reader.pages[0])
+    with open(output_path, "wb") as output_file:
+        writer.write(output_file)
+
+
+def ocr_pdf_pages(input_path, output_pdf, languages="rus", **kwargs):
+    """Обрабатывает каждую страницу PDF в отдельном потоке."""
+    temp_pages = split_pdf(input_path)
+    temp_output_pages = []
+
+    def process_page(page_path):
+        temp_output = page_path.with_name(page_path.stem + "_ocr.pdf")
+        ocr_pdf(
+            input_path=str(page_path),
+            output_pdf=str(temp_output),
+            sidecar_txt=None,
+            languages=languages,
+            **kwargs,
+        )
+        return temp_output
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(process_page, page) for page in temp_pages]
+        for future in futures:
+            try:
+                temp_output_pages.append(future.result())
+            except Exception as e:
+                print(f"Ошибка при обработке страницы: {e}")
+
+    merge_pdfs(temp_output_pages, output_pdf)
+
+    # Удаляем временные файлы
+    for temp_file in temp_pages + temp_output_pages:
+        temp_file.unlink()
+
+
+def ocr_pdf_parallel(tasks, max_workers=4):
+    """
+    Выполняет OCR для нескольких файлов параллельно.
+    tasks: список словарей с параметрами для ocr_pdf.
+    max_workers: максимальное количество потоков.
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(ocr_pdf, **task) for task in tasks]
+        for future in futures:
+            try:
+                future.result()  # Ждём завершения задачи
+            except Exception as e:
+                print(f"Ошибка при обработке задачи: {e}")
 
 
 def main(argv=None) -> int:
@@ -364,11 +442,48 @@ def main(argv=None) -> int:
         tess_cfg_parts.append("preserve_interword_spaces=1")
     tess_cfg = " ".join(tess_cfg_parts) if tess_cfg_parts else None
 
-    try:
-        ocr_pdf(
+    # Список задач для многопоточной обработки
+    tasks = []
+    if inp_path.is_dir():
+        # Если входной путь — папка, обработаем все PDF внутри
+        for file in inp_path.glob("*.pdf"):
+            out_pdf, out_txt = _build_output_paths(file, outdir, overwrite=args.overwrite)
+            tasks.append({
+                "input_path": str(file),
+                "output_pdf": str(out_pdf),
+                "sidecar_txt": str(out_txt),
+                "languages": args.lang,
+                "progress": not args.no_progress,
+                "clean": args.clean,
+                "optimize": args.optimize,
+                "oversample": args.oversample,
+                "tesseract_pagesegmode": args.psm,
+                "tesseract_oem": args.oem,
+                "output_type": args.output_type,
+                "tesseract_config": tess_cfg,
+            })
+    else:
+        # Если входной путь — файл, обработаем его
+        out_pdf, out_txt = _build_output_paths(inp_path, outdir, overwrite=args.overwrite)
+        tasks.append({
+            "input_path": str(inp_path),
+            "output_pdf": str(out_pdf),
+            "sidecar_txt": str(out_txt),
+            "languages": args.lang,
+            "progress": not args.no_progress,
+            "clean": args.clean,
+            "optimize": args.optimize,
+            "oversample": args.oversample,
+            "tesseract_pagesegmode": args.psm,
+            "tesseract_oem": args.oem,
+            "output_type": args.output_type,
+            "tesseract_config": tess_cfg,
+        })
+
+    if inp_path.is_file():
+        ocr_pdf_pages(
             input_path=str(inp_path),
             output_pdf=str(out_pdf),
-            sidecar_txt=str(out_txt),
             languages=args.lang,
             progress=not args.no_progress,
             clean=args.clean,
@@ -379,36 +494,11 @@ def main(argv=None) -> int:
             output_type=args.output_type,
             tesseract_config=tess_cfg,
         )
-    except Exception as e:
-        msg = str(e)
-        # Авто-откат: если включен --clean, но нет unpaper — повторим без очистки
-        if args.clean and ("unpaper" in msg.lower() or "Could not find program 'unpaper'" in msg):
-            print("Предупреждение: 'unpaper' недоступен. Продолжаю без очистки (—clean отключён).")
-            try:
-                ocr_pdf(
-                    input_path=str(inp_path),
-                    output_pdf=str(out_pdf),
-                    sidecar_txt=str(out_txt),
-                    languages=args.lang,
-                    progress=not args.no_progress,
-                    clean=False,
-                    optimize=args.optimize,
-                    oversample=args.oversample,
-                    tesseract_pagesegmode=args.psm,
-                    tesseract_oem=args.oem,
-                    output_type=args.output_type,
-                    tesseract_config=tess_cfg,
-                )
-            except Exception as e2:
-                print("Не удалось выполнить OCR даже без очистки:", e2)
-                return 4
-        else:
-            print("Не удалось выполнить OCR:", e)
-            return 4
+    else:
+        print("Ошибка: входной путь должен быть файлом PDF.")
+        return 2
 
     print("Готово.")
-    print(f"PDF:  {out_pdf}")
-    print(f"TXT:  {out_txt}")
     return 0
 
 

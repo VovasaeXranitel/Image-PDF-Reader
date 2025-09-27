@@ -1,2 +1,7 @@
 ocrmypdf>=16.0.0
 pillow>=10.0.0
+PyPDF2>=3.0.1
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+# Убедитесь, что установлены системные зависимости: Tesseract OCR и Ghostscript.

@@ -1,164 +1,129 @@
-# Image PDF Reader (OCR)
+# Image PDF Reader (Stateless OCR API)
 
-Небольшой CLI-скрипт для распознавания текста (OCR) в PDF/изображениях и сохранения результатов в отдельную папку проекта.
+Минимальный сервис распознавания текста из PDF: один маршрут `/ocr` принимает PDF (application/pdf) байтами и возвращает распознанный текст. Никаких файлов на диске не сохраняется. Конфигурация OCR жёстко зашита в коде и меняется только через правку `_OCR_CONFIG` в `app/interfaces/api/api.py`.
 
-Что делает:
-- Принимает путь к входному файлу (PDF или изображение) через терминал.
-- Создаёт папку `output` в корне проекта (по умолчанию) и сохраняет туда:
-  - поисковый PDF c текстовым слоем: `<имя>__ocr.pdf`
-  - извлечённый текст (sidecar): `<имя>__ocr.txt`
-- Избегает перезаписи: при совпадении имён добавляет суффиксы `-1`, `-2`, ... (если не указать `--overwrite`).
-
-## Требования
-- Python 3.10+
-- Системные зависимости:
-  - Tesseract OCR (с языковыми данными для нужных языков, напр. `rus`)
-  - Ghostscript (x64 на 64-битной Windows)
-- Python-зависимости: см. `requirements.txt` (`ocrmypdf`, `pillow`).
-
-## Установка (Windows, cmd.exe)
-1) (Опционально) создать и активировать виртуальное окружение:
-```bat
-python -m venv .venv
-".venv\Scripts\activate"
+## Текущая жёсткая конфигурация
+```
+languages: rus+eng
+psm: 6              # один блок текста
+oem: 1              # LSTM
+oversample: 350     # повышение DPI
+optimize: 0         # без оптимизации (устойчивее к битым JPEG)
+whitelist: русский алфавит + цифры + базовые знаки препинания
+preserve_spaces: true
 ```
 
-2) Установить Python-зависимости:
-```bat
-pip install -U pip
+## Зависимости
+На старте сервис выполняет авто-проверку наличия:
+- Tesseract (и языков `rus`, `eng`)
+- Ghostscript
+Если что-то отсутствует — запрос к `/ocr` вернёт `503` с JSON-отчётом:
+```json
+{
+  "detail": {
+    "error": "OCR dependencies not ready",
+    "dependencies": {
+      "tesseract": { "found": false, ... },
+      "ghostscript": { "found": true, ... },
+      "languages_ok": false,
+      "missing_languages": ["rus"]
+    }
+  }
+}
+```
+
+## Установка локально (без Docker)
+```bash
 pip install -r requirements.txt
+uvicorn run_api:app --reload --port 8000
+```
+Swagger UI: http://127.0.0.1:8000/swagger  
+ReDoc:      http://127.0.0.1:8000/redoc
+
+(Если Tesseract и Ghostscript не в PATH на Windows — добавьте их вручную.)
+
+## Единственный маршрут
+| Метод | Путь | Описание |
+|-------|------|----------|
+| POST  | /ocr | Принимает PDF (application/pdf) -> JSON с текстом |
+
+### Пример запроса (curl)
+```bash
+curl -X POST http://127.0.0.1:8000/ocr \
+  -H "Content-Type: application/pdf" \
+  --data-binary "@C:/Users/Vovas/Downloads/Путевой_Проезд.pdf"
+```
+Ответ (пример):
+```json
+{
+  "success": true,
+  "text": "...распознанный текст...",
+  "chars": 12345,
+  "languages": "rus+eng"
+}
 ```
 
-3) Установить системные зависимости:
-- Tesseract OCR: скачайте инсталлятор (рекомендуется сборка UB Mannheim) и установите, убедившись, что установлен язык `rus`.
-  - Страница: https://github.com/UB-Mannheim/tesseract/wiki
-  - После установки типичный путь: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- Ghostscript (x64): скачайте инсталлятор с официального сайта и установите.
-  - Страница: https://ghostscript.com/releases/index.html
-  - После установки типичный путь: `C:\Program Files\gs\<версия>\bin\gswin64c.exe`
+### Обработка ошибок
+| Код | Причина | Пример detail |
+|-----|---------|---------------|
+| 400 | Пустые или повреждённые данные | "Пустые или повреждённые данные PDF" |
+| 503 | Отсутствуют зависимости | { error: "OCR dependencies not ready", dependencies: {...} } |
 
-(Опционально) через winget — сначала найдите доступные пакеты:
-```bat
-winget search tesseract
-winget search ghostscript
+## Docker
+### Сборка
+```bash
+docker build -t ocr-api:latest .
 ```
-Затем установите по найденному идентификатору, например:
-```bat
-winget install --id=UB-Mannheim.TesseractOCR -e
-rem Пример для Ghostscript (идентификатор может отличаться):
-winget install --id=Ghostscript.Ghostscript -e
+### Запуск
+```bash
+docker run --rm -p 8000:8000 ocr-api:latest
 ```
-
-4) Убедиться, что исполняемые файлы доступны:
-- Либо добавьте их в PATH/переменные среды на время текущей сессии:
-```bat
-set "PATH=C:\Program Files\Tesseract-OCR;%PATH%"
-set "OCRMYPDF_GS=C:\Program Files\gs\gs10.06.0\bin\gswin64c.exe"
-```
-- Либо передайте пути параметрами запуска (`--tesseract-dir`, `--gs-dir`).
-
-Проверка версий:
-```bat
-tesseract --version
-"C:\Program Files\gs\gs10.06.0\bin\gswin64c.exe" --version
+Проверка:
+```bash
+curl -X POST http://127.0.0.1:8000/ocr \
+  -H "Content-Type: application/pdf" \
+  --data-binary @sample.pdf | jq '.chars'
 ```
 
-Проверка установленных языков Tesseract:
-```bat
-tesseract --list-langs
-```
+### Что внутри образа
+Dockerfile устанавливает:
+- `tesseract-ocr`, `tesseract-ocr-rus`, `tesseract-ocr-eng`
+- `ghostscript`, `qpdf`, `pngquant` (для ocrmypdf)
+- Python зависимости из `requirements.txt`
+На этапе сборки выполняется ранняя проверка зависимостей — build упадёт, если что-то критичное отсутствует.
 
-(Для PowerShell эквивалент):
-```powershell
-$env:PATH = "C:\Program Files\Tesseract-OCR;" + $env:PATH
-$env:OCRMYPDF_GS = "C:\Program Files\gs\gs10.06.0\bin\gswin64c.exe"
+## Изменение конфигурации OCR
+Редактируйте `_OCR_CONFIG` в `app/interfaces/api/api.py`. Пример (если нужно только русский):
+```python
+_OCR_CONFIG = OcrSimpleOptions(
+    languages="rus",
+    psm=6,
+    oem=1,
+    oversample=300,
+    optimize=0,
+    whitelist="АБВГДЕЁ...",  # ваш набор
+    preserve_spaces=True,
+)
 ```
+После правки пересоберите образ или перезапустите сервис.
 
-## Использование
-Запуск из корня проекта (cmd.exe):
-```bat
-python main.py "C:\путь\к\файлу.pdf"
-```
-- По умолчанию результаты будут в папке проекта: `output`.
+## Качество распознавания
+- `oversample=350` подходит для слабых сканов (можно 300–400)
+- `psm=6` — «один блок текста» (для форм/таблиц попробуйте 11 — при необходимости в коде)
+- Жёсткий whitelist снижает «мусор» и латиницу
+- Если появляются пропуски букв — проверьте исходник и DPI
 
-Частые опции:
-- Задать папку вывода:
-```bat
-python main.py "C:\путь\к\файлу.pdf" -o "D:\OCR_Results"
+## Обновление языков в Docker (пример)
+```bash
+docker exec -it <container> bash -c "apt-get update && apt-get install -y tesseract-ocr-eng tesseract-ocr-rus"
 ```
-- Указать языки Tesseract (например, русский+английский):
-```bat
-python main.py "C:\путь\к\файлу.pdf" -l rus+eng
-```
-- Разрешить перезапись существующих файлов:
-```bat
-python main.py "C:\путь\к\файлу.pdf" --overwrite
-```
-- Отключить прогресс-бар:
-```bat
-python main.py "C:\путь\к\файлу.pdf" --no-progress
-```
-- Явно указать каталоги Tesseract/Ghostscript, если они не в PATH:
-```bat
-python main.py "C:\путь\к\файлу.pdf" -l rus ^
-  --tesseract-dir "C:\Program Files\Tesseract-OCR" ^
-  --gs-dir "C:\Program Files\gs\gs10.06.0\bin"
-```
+(Обычно не нужно — уже включены.)
 
-Справка по всем параметрам:
-```bat
-python main.py --help
-```
+## Ограничения и планы
+- Нет поддержки изображений (PNG/JPG) напрямую — можно добавить конвертацию через `pdfimages`/Pillow
+- Нет health-роута (статус виден по /swagger — если открывается, сервер жив)
+- Нет стриминга прогресса (всё делается целиком)
+- Нет аутентификации (можно повесить reverse proxy / OAuth / API ключ)
 
-## Как улучшить качество OCR
-- Повысить DPI перед распознаванием (часто критично для сканов низкого качества):
-```bat
-python main.py "C:\путь\к\файлу.pdf" -l rus --oversample 350
-```
-- Настроить режим сегментации страницы (PSM): 6 — «один блок текста», 11 — «разреженный текст». Попробуйте оба:
-```bat
-python main.py "C:\путь\к\файлу.pdf" -l rus --psm 6
-python main.py "C:\путь\к\файлу.pdf" -l rus --psm 11
-```
-- Выбрать движок Tesseract OEM: 1 — LSTM-only (часто лучший результат):
-```bat
-python main.py "C:\путь\к\файлу.pdf" -l rus --oem 1
-```
-- Комбинировать языки, если есть английские буквы, номера, латиница: `-l rus+eng`.
-- Сохранить пробелы как есть (иногда полезно для табличных форм): `--preserve-spaces`.
-- Ограничить алфавит (уменьшить «белиберду») через whitelist, например:
-```bat
-python main.py "C:\путь\к\файлу.pdf" -l rus --psm 6 --oem 1 --oversample 350 ^
-  --whitelist "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0-9.-,"
-```
-
-## Диагностика и устранение проблем
-- Вывести диагностику путей к зависимостям (что именно найдено):
-```bat
-python main.py "C:\путь\к\файлу.pdf" --debug-deps
-```
-- Сообщение `[tesseract] lots of diacritics - possibly poor OCR`:
-  - Повышайте `--oversample` (300–400), проверьте правильность языков (`-l rus`/`rus+eng`), попробуйте `--psm 6` или `--psm 11`, `--oem 1`.
-- Предупреждения об «invalid jpeg data / image file is truncated»:
-  - Встречаются в «битых» PDF/изображениях. В проекте включена устойчивость к усечённым JPEG. Держите `--optimize 0` (по умолчанию). Если требуется строгий PDF/A, попробуйте `--output-type pdfa` (может не сработать на повреждённых данных).
-- Ошибка о `unpaper` на Windows:
-  - Утилита часто недоступна; не используйте `--clean` или просто оставьте по умолчанию — скрипт сам повторит без очистки.
-- Ghostscript/Tesseract не находятся:
-  - Добавьте в PATH/установите `OCRMYPDF_GS` (см. выше) или используйте `--gs-dir`/`--tesseract-dir`.
-
-## Примеры
-- Базовый запуск с повышением DPI и улучшенной сегментацией:
-```bat
-python main.py "C:\Users\Vovas\Downloads\Путевой_Проезд.pdf" -l rus --oversample 350 --psm 6 --oem 1
-```
-- С явными путями к зависимостям:
-```bat
-python main.py "C:\Users\Vovas\Downloads\Путевой_Проезд.pdf" -l rus ^
-  --tesseract-dir "C:\Program Files\Tesseract-OCR" ^
-  --gs-dir "C:\Program Files\gs\gs10.06.0\bin"
-```
-
-## Выводы
-- Результирующие файлы попадают в `output` (или папку, указанную `-o`).
-- Имена не перезаписываются, если не указан `--overwrite`.
-- Для проблемных сканов используйте комбинацию: `--oversample 300-400`, `--psm 6/11`, `--oem 1`, `-l rus+eng`, `--whitelist`.
+## Лицензия
+Свободно для внутреннего и учебного использования. Добавьте ссылку на репозиторий при распространении.
