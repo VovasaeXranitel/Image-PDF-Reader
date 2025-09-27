@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 import argparse
-from typing import Tuple
+from typing import Tuple, cast, Optional
 import os
 import shutil
 import platform
@@ -100,7 +100,7 @@ def ensure_tesseract() -> bool:
 def ocr_pdf(
     input_path: str,
     output_pdf: str,
-    sidecar_txt: str,
+    sidecar_txt: str | None,
     languages: str = "rus",
     progress: bool = True,
     clean: bool = False,
@@ -240,7 +240,7 @@ def ocr_pdf_pages(input_path, output_pdf, languages="rus", **kwargs):
         ocr_pdf(
             input_path=str(page_path),
             output_pdf=str(temp_output),
-            sidecar_txt=None,
+            sidecar_txt=cast(Optional[str], None),
             languages=languages,
             **kwargs,
         )

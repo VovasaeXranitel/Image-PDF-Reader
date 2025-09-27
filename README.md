@@ -127,3 +127,7 @@ docker exec -it <container> bash -c "apt-get update && apt-get install -y tesser
 
 ## Лицензия
 Свободно для внутреннего и учебного использования. Добавьте ссылку на репозиторий при распространении.
+
+## Project cleanup notes
+
+This repository has had a cleanup operation to remove test files and unused artifacts. If you need to revert changes, check your VCS history.

@@ -11,7 +11,7 @@ import logging
 
 # ЖЁСТКАЯ КОНФИГУРАЦИЯ OCR (меняется только в коде) — whitelist убран
 _OCR_CONFIG = OcrSimpleOptions(
-    languages="rus+eng",
+    languages="rus",
     psm=6,
     oem=1,
     oversample=350,
